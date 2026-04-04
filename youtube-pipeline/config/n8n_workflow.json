@@ -1,0 +1,889 @@
+{
+  "name": "YouTube Pipeline — Femmes Historiques",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "versionId": "v4.0",
+  "meta": { "instanceId": "youtube-pipeline-v4" },
+  "tags": [{ "name": "youtube" }, { "name": "automation" }],
+
+  "nodes": [
+
+    {
+      "id": "node_01",
+      "name": "🕐 CRON Hebdomadaire",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{
+            "field": "weeks",
+            "triggerAtDay": [1],
+            "triggerAtHour": 9,
+            "triggerAtMinute": 0
+          }]
+        }
+      }
+    },
+
+    {
+      "id": "node_02",
+      "name": "🏥 Health Check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [220, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "http://video_worker:5000/health",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      }
+    },
+
+    {
+      "id": "node_03",
+      "name": "Système OK ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c1",
+            "leftValue": "={{ $json.status }}",
+            "rightValue": "ok",
+            "operator": { "type": "string", "operation": "equals" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_04",
+      "name": "📋 Prochain Sujet",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [660, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "http://video_worker:5000/queue/next",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      }
+    },
+
+    {
+      "id": "node_05",
+      "name": "File vide ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c2",
+            "leftValue": "={{ $json.name }}",
+            "rightValue": "",
+            "operator": { "type": "string", "operation": "isNotEmpty" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_06",
+      "name": "📌 Variables Sujet",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [1100, 300],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "subject_name", "value": "={{ $json.name }}", "type": "string" },
+            { "id": "a2", "name": "subject_slug", "value": "={{ $json.name.toLowerCase().replace(/[^a-z0-9]/g, '-') }}", "type": "string" },
+            { "id": "a3", "name": "run_id", "value": "={{ $now.toFormat('yyyyMMdd-HHmm') }}", "type": "string" }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": "node_07",
+      "name": "🔍 Recherche Wikipedia",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1320, 300],
+      "parameters": {
+        "command": "docker exec video_processor python /app/01-research/fetch_data.py --name \"{{ $json.subject_name }}\" --slug \"{{ $json.subject_slug }}\""
+      }
+    },
+
+    {
+      "id": "node_08",
+      "name": "Recherche OK ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1540, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c3",
+            "leftValue": "={{ $json.exitCode }}",
+            "rightValue": 0,
+            "operator": { "type": "number", "operation": "equals" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_09",
+      "name": "✍️ Générer Script",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1760, 300],
+      "parameters": {
+        "command": "docker exec video_processor python /app/02-scripts/generator.py --slug \"{{ $('📌 Variables Sujet').item.json.subject_slug }}\""
+      }
+    },
+
+    {
+      "id": "node_10",
+      "name": "📊 Lire Score Confiance",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1980, 300],
+      "parameters": {
+        "command": "docker exec video_processor python -c \"import json; d=json.load(open('/data/02-scripts/pending/{{ $('📌 Variables Sujet').item.json.subject_slug }}.json')); print(d['metadata']['confidence_score']); print(d['metadata']['fact_check_verdict'])\""
+      }
+    },
+
+    {
+      "id": "node_11",
+      "name": "Score ≥ 8 ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2200, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "c4a",
+              "leftValue": "={{ parseInt($json.stdout.split('\\n')[0]) }}",
+              "rightValue": 8,
+              "operator": { "type": "number", "operation": "gte" }
+            },
+            {
+              "id": "c4b",
+              "leftValue": "={{ $json.stdout.split('\\n')[1].trim() }}",
+              "rightValue": "PUBLIER",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_12",
+      "name": "⚠️ Notif Révision Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [2420, 500],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "⚠️ Script à valider — {{ $('📌 Variables Sujet').item.json.subject_name }}\n\nScore: {{ parseInt($('📊 Lire Score Confiance').item.json.stdout.split('\\n')[0]) }}/10\nVérdict: {{ $('📊 Lire Score Confiance').item.json.stdout.split('\\n')[1] }}\n\nVoir: /data/02-scripts/review_needed/{{ $('📌 Variables Sujet').item.json.subject_slug }}.json\n\nApprouver: POST http://localhost:5678/webhook/review-ok/{{ $('📌 Variables Sujet').item.json.subject_slug }}\nRejeter: POST http://localhost:5678/webhook/review-ko/{{ $('📌 Variables Sujet').item.json.subject_slug }}"
+      },
+      "credentials": { "telegramApi": { "id": "telegram-cred", "name": "Telegram Bot" } }
+    },
+
+    {
+      "id": "node_13",
+      "name": "⏳ Attente Révision (24h max)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [2640, 500],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "review-ok/{{ $('📌 Variables Sujet').item.json.subject_slug }}",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "node_14",
+      "name": "🎨 Démarrer Images (FastAPI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2860, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://video_worker:5000/generate-images",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ slug: $('📌 Variables Sujet').item.json.subject_slug, name: $('📌 Variables Sujet').item.json.subject_name }) }}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      }
+    },
+
+    {
+      "id": "node_15",
+      "name": "🔢 Init Compteur Images",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [3080, 300],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "b1", "name": "img_counter", "value": 0, "type": "number" },
+            { "id": "b2", "name": "slug", "value": "={{ $('📌 Variables Sujet').item.json.subject_slug }}", "type": "string" }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": "node_16",
+      "name": "🔄 Statut Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3080, 500],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://video_worker:5000/status/{{ $json.slug }}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      }
+    },
+
+    {
+      "id": "node_17",
+      "name": "Images Terminées ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3300, 500],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c5",
+            "leftValue": "={{ $json.status }}",
+            "rightValue": "assets_done",
+            "operator": { "type": "string", "operation": "equals" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_18",
+      "name": "🔢 Compteur Images ++",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [3520, 600],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "c1", "name": "img_counter", "value": "={{ $json.img_counter + 1 }}", "type": "number" },
+            { "id": "c2", "name": "slug", "value": "={{ $json.slug }}", "type": "string" }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": "node_19",
+      "name": "Timeout Images ? (20min)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3740, 600],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c6",
+            "leftValue": "={{ $json.img_counter }}",
+            "rightValue": 20,
+            "operator": { "type": "number", "operation": "gte" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_20",
+      "name": "⏳ Attente 60s Images",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [3960, 700],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 60,
+        "unit": "seconds"
+      }
+    },
+
+    {
+      "id": "node_21",
+      "name": "🎙️ Générer Audio",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3300, 300],
+      "parameters": {
+        "command": "docker exec video_processor python /app/03-assets/generate_audio.py --slug \"{{ $('📌 Variables Sujet').item.json.subject_slug }}\""
+      }
+    },
+
+    {
+      "id": "node_22",
+      "name": "🖼️ Générer Thumbnail",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3520, 300],
+      "parameters": {
+        "command": "docker exec video_processor python /app/03-assets/generate_thumbnail.py --slug \"{{ $('📌 Variables Sujet').item.json.subject_slug }}\" --name \"{{ $('📌 Variables Sujet').item.json.subject_name }}\""
+      }
+    },
+
+    {
+      "id": "node_23",
+      "name": "📸 Envoyer Thumbnail Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [3740, 300],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "file": "/data/03-assets/thumbnails/{{ $('📌 Variables Sujet').item.json.subject_slug }}.jpg",
+        "additionalFields": {
+          "caption": "🖼️ Thumbnail — {{ $('📌 Variables Sujet').item.json.subject_name }}\n\nPublier: POST http://localhost:5678/webhook/thumb-ok/{{ $('📌 Variables Sujet').item.json.subject_slug }}\nRégénérer: POST http://localhost:5678/webhook/thumb-ko/{{ $('📌 Variables Sujet').item.json.subject_slug }}"
+        }
+      },
+      "credentials": { "telegramApi": { "id": "telegram-cred", "name": "Telegram Bot" } }
+    },
+
+    {
+      "id": "node_24",
+      "name": "⏳ Attente Validation Thumbnail",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [3960, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "thumb-ok/{{ $('📌 Variables Sujet').item.json.subject_slug }}",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "node_25",
+      "name": "✂️ Démarrer Montage (FastAPI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [4180, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://video_worker:5000/edit",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ slug: $('📌 Variables Sujet').item.json.subject_slug }) }}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      }
+    },
+
+    {
+      "id": "node_26",
+      "name": "🔢 Init Compteur Edit",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [4400, 300],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "d1", "name": "edit_counter", "value": 0, "type": "number" },
+            { "id": "d2", "name": "slug", "value": "={{ $('📌 Variables Sujet').item.json.subject_slug }}", "type": "string" }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": "node_27",
+      "name": "🔄 Statut Montage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [4400, 500],
+      "parameters": {
+        "method": "GET",
+        "url": "=http://video_worker:5000/status/{{ $json.slug }}",
+        "options": { "response": { "response": { "responseFormat": "json" } } }
+      }
+    },
+
+    {
+      "id": "node_28",
+      "name": "Montage Terminé ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4620, 500],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c7",
+            "leftValue": "={{ $json.status }}",
+            "rightValue": "edit_done",
+            "operator": { "type": "string", "operation": "equals" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_29",
+      "name": "🔢 Compteur Edit ++",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [4840, 600],
+      "parameters": {
+        "mode": "manual",
+        "assignments": {
+          "assignments": [
+            { "id": "e1", "name": "edit_counter", "value": "={{ $json.edit_counter + 1 }}", "type": "number" },
+            { "id": "e2", "name": "slug", "value": "={{ $json.slug }}", "type": "string" }
+          ]
+        }
+      }
+    },
+
+    {
+      "id": "node_30",
+      "name": "Timeout Montage ? (30min)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [5060, 600],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c8",
+            "leftValue": "={{ $json.edit_counter }}",
+            "rightValue": 30,
+            "operator": { "type": "number", "operation": "gte" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_31",
+      "name": "⏳ Attente 60s Montage",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [5280, 700],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 60,
+        "unit": "seconds"
+      }
+    },
+
+    {
+      "id": "node_32",
+      "name": "✅ Valider MP4",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [4620, 300],
+      "parameters": {
+        "command": "docker exec video_processor python -c \"import subprocess, sys; r=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0','/data/04-edit/exports/{{ $('📌 Variables Sujet').item.json.subject_slug }}.mp4'],capture_output=True,text=True); d=float(r.stdout.strip() or 0); print('valid' if d>10 else 'invalid'); sys.exit(0 if d>10 else 1)\""
+      }
+    },
+
+    {
+      "id": "node_33",
+      "name": "MP4 Valide ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4840, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "typeValidation": "loose" },
+          "conditions": [{
+            "id": "c9",
+            "leftValue": "={{ $json.exitCode }}",
+            "rightValue": 0,
+            "operator": { "type": "number", "operation": "equals" }
+          }],
+          "combinator": "and"
+        }
+      }
+    },
+
+    {
+      "id": "node_34",
+      "name": "📤 Upload YouTube",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [5060, 300],
+      "parameters": {
+        "command": "docker exec video_processor python /app/05-upload/uploader.py --slug \"{{ $('📌 Variables Sujet').item.json.subject_slug }}\" --name \"{{ $('📌 Variables Sujet').item.json.subject_name }}\""
+      }
+    },
+
+    {
+      "id": "node_35",
+      "name": "✔️ Marquer Fait (Queue)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [5280, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://video_worker:5000/queue/done",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ name: $('📌 Variables Sujet').item.json.subject_name }) }}",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "node_36",
+      "name": "🧹 Nettoyage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [5500, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://video_worker:5000/maintenance/cleanup",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "node_37",
+      "name": "🎉 Succès Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [5720, 300],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "✅ Vidéo publiée !\n\n📹 {{ $('📌 Variables Sujet').item.json.subject_name }}\n🕐 Run: {{ $('📌 Variables Sujet').item.json.run_id }}\n\nPipeline terminé avec succès."
+      },
+      "credentials": { "telegramApi": { "id": "telegram-cred", "name": "Telegram Bot" } }
+    },
+
+    {
+      "id": "node_38",
+      "name": "📭 File Vide — Stop",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [880, 500],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "ℹ️ File d'attente vide. Ajouter des sujets via POST /queue/add"
+      },
+      "credentials": { "telegramApi": { "id": "telegram-cred", "name": "Telegram Bot" } }
+    },
+
+    {
+      "id": "node_39",
+      "name": "❌ Erreur Générale",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [2860, 900],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "🚨 ERREUR PIPELINE\n\nSujet: {{ $('📌 Variables Sujet').item.json.subject_name || 'inconnu' }}\nÉtape: {{ $runIndex }}\nErreur: {{ $json.stderr || $json.error || 'voir logs' }}\n\nVoir: /data/logs/"
+      },
+      "credentials": { "telegramApi": { "id": "telegram-cred", "name": "Telegram Bot" } }
+    },
+
+    {
+      "id": "node_40",
+      "name": "🔁 CRON Hebdo Maintenance",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 900],
+      "parameters": {
+        "rule": {
+          "interval": [{
+            "field": "weeks",
+            "triggerAtDay": [0],
+            "triggerAtHour": 3,
+            "triggerAtMinute": 0
+          }]
+        }
+      }
+    },
+
+    {
+      "id": "node_41",
+      "name": "🗄️ Backup SQLite",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [220, 900],
+      "parameters": {
+        "command": "docker exec video_processor python -c \"from config.cleanup import backup_database; r=backup_database(); print(r)\""
+      }
+    },
+
+    {
+      "id": "node_42",
+      "name": "🧹 Cleanup Hebdo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 900],
+      "parameters": {
+        "method": "POST",
+        "url": "http://video_worker:5000/maintenance/cleanup",
+        "options": {}
+      }
+    },
+
+    {
+      "id": "node_43",
+      "name": "📊 Rapport Semaine",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [660, 900],
+      "parameters": {
+        "command": "docker exec video_processor python -c \"import sqlite3; conn=sqlite3.connect('/app/config/status.db'); r=conn.execute(\\\"SELECT status, COUNT(*) FROM subjects GROUP BY status\\\").fetchall(); print('\\\\n'.join(f'{s}: {n}' for s,n in r))\""
+      }
+    },
+
+    {
+      "id": "node_44",
+      "name": "📈 Rapport Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [880, 900],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "📊 Rapport Hebdomadaire\n\n{{ $('📊 Rapport Semaine').item.json.stdout }}\n\n🗄️ Backup: OK\n🧹 Nettoyage: OK"
+      },
+      "credentials": { "telegramApi": { "id": "telegram-cred", "name": "Telegram Bot" } }
+    }
+
+  ],
+
+  "connections": {
+
+    "🕐 CRON Hebdomadaire": {
+      "main": [[{ "node": "🏥 Health Check", "type": "main", "index": 0 }]]
+    },
+
+    "🏥 Health Check": {
+      "main": [[{ "node": "Système OK ?", "type": "main", "index": 0 }]]
+    },
+
+    "Système OK ?": {
+      "main": [
+        [{ "node": "📋 Prochain Sujet", "type": "main", "index": 0 }],
+        [{ "node": "❌ Erreur Générale", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "📋 Prochain Sujet": {
+      "main": [[{ "node": "File vide ?", "type": "main", "index": 0 }]]
+    },
+
+    "File vide ?": {
+      "main": [
+        [{ "node": "📌 Variables Sujet", "type": "main", "index": 0 }],
+        [{ "node": "📭 File Vide — Stop", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "📌 Variables Sujet": {
+      "main": [[{ "node": "🔍 Recherche Wikipedia", "type": "main", "index": 0 }]]
+    },
+
+    "🔍 Recherche Wikipedia": {
+      "main": [[{ "node": "Recherche OK ?", "type": "main", "index": 0 }]]
+    },
+
+    "Recherche OK ?": {
+      "main": [
+        [{ "node": "✍️ Générer Script", "type": "main", "index": 0 }],
+        [{ "node": "❌ Erreur Générale", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "✍️ Générer Script": {
+      "main": [[{ "node": "📊 Lire Score Confiance", "type": "main", "index": 0 }]]
+    },
+
+    "📊 Lire Score Confiance": {
+      "main": [[{ "node": "Score ≥ 8 ?", "type": "main", "index": 0 }]]
+    },
+
+    "Score ≥ 8 ?": {
+      "main": [
+        [{ "node": "🎨 Démarrer Images (FastAPI)", "type": "main", "index": 0 }],
+        [{ "node": "⚠️ Notif Révision Telegram", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "⚠️ Notif Révision Telegram": {
+      "main": [[{ "node": "⏳ Attente Révision (24h max)", "type": "main", "index": 0 }]]
+    },
+
+    "⏳ Attente Révision (24h max)": {
+      "main": [[{ "node": "🎨 Démarrer Images (FastAPI)", "type": "main", "index": 0 }]]
+    },
+
+    "🎨 Démarrer Images (FastAPI)": {
+      "main": [[{ "node": "🔢 Init Compteur Images", "type": "main", "index": 0 }]]
+    },
+
+    "🔢 Init Compteur Images": {
+      "main": [[{ "node": "🔄 Statut Images", "type": "main", "index": 0 }]]
+    },
+
+    "🔄 Statut Images": {
+      "main": [[{ "node": "Images Terminées ?", "type": "main", "index": 0 }]]
+    },
+
+    "Images Terminées ?": {
+      "main": [
+        [{ "node": "🎙️ Générer Audio", "type": "main", "index": 0 }],
+        [{ "node": "🔢 Compteur Images ++", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "🔢 Compteur Images ++": {
+      "main": [[{ "node": "Timeout Images ? (20min)", "type": "main", "index": 0 }]]
+    },
+
+    "Timeout Images ? (20min)": {
+      "main": [
+        [{ "node": "❌ Erreur Générale", "type": "main", "index": 0 }],
+        [{ "node": "⏳ Attente 60s Images", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "⏳ Attente 60s Images": {
+      "main": [[{ "node": "🔄 Statut Images", "type": "main", "index": 0 }]]
+    },
+
+    "🎙️ Générer Audio": {
+      "main": [[{ "node": "🖼️ Générer Thumbnail", "type": "main", "index": 0 }]]
+    },
+
+    "🖼️ Générer Thumbnail": {
+      "main": [[{ "node": "📸 Envoyer Thumbnail Telegram", "type": "main", "index": 0 }]]
+    },
+
+    "📸 Envoyer Thumbnail Telegram": {
+      "main": [[{ "node": "⏳ Attente Validation Thumbnail", "type": "main", "index": 0 }]]
+    },
+
+    "⏳ Attente Validation Thumbnail": {
+      "main": [[{ "node": "✂️ Démarrer Montage (FastAPI)", "type": "main", "index": 0 }]]
+    },
+
+    "✂️ Démarrer Montage (FastAPI)": {
+      "main": [[{ "node": "🔢 Init Compteur Edit", "type": "main", "index": 0 }]]
+    },
+
+    "🔢 Init Compteur Edit": {
+      "main": [[{ "node": "🔄 Statut Montage", "type": "main", "index": 0 }]]
+    },
+
+    "🔄 Statut Montage": {
+      "main": [[{ "node": "Montage Terminé ?", "type": "main", "index": 0 }]]
+    },
+
+    "Montage Terminé ?": {
+      "main": [
+        [{ "node": "✅ Valider MP4", "type": "main", "index": 0 }],
+        [{ "node": "🔢 Compteur Edit ++", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "🔢 Compteur Edit ++": {
+      "main": [[{ "node": "Timeout Montage ? (30min)", "type": "main", "index": 0 }]]
+    },
+
+    "Timeout Montage ? (30min)": {
+      "main": [
+        [{ "node": "❌ Erreur Générale", "type": "main", "index": 0 }],
+        [{ "node": "⏳ Attente 60s Montage", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "⏳ Attente 60s Montage": {
+      "main": [[{ "node": "🔄 Statut Montage", "type": "main", "index": 0 }]]
+    },
+
+    "✅ Valider MP4": {
+      "main": [[{ "node": "MP4 Valide ?", "type": "main", "index": 0 }]]
+    },
+
+    "MP4 Valide ?": {
+      "main": [
+        [{ "node": "📤 Upload YouTube", "type": "main", "index": 0 }],
+        [{ "node": "❌ Erreur Générale", "type": "main", "index": 0 }]
+      ]
+    },
+
+    "📤 Upload YouTube": {
+      "main": [[{ "node": "✔️ Marquer Fait (Queue)", "type": "main", "index": 0 }]]
+    },
+
+    "✔️ Marquer Fait (Queue)": {
+      "main": [[{ "node": "🧹 Nettoyage", "type": "main", "index": 0 }]]
+    },
+
+    "🧹 Nettoyage": {
+      "main": [[{ "node": "🎉 Succès Telegram", "type": "main", "index": 0 }]]
+    },
+
+    "🔁 CRON Hebdo Maintenance": {
+      "main": [[{ "node": "🗄️ Backup SQLite", "type": "main", "index": 0 }]]
+    },
+
+    "🗄️ Backup SQLite": {
+      "main": [[{ "node": "🧹 Cleanup Hebdo", "type": "main", "index": 0 }]]
+    },
+
+    "🧹 Cleanup Hebdo": {
+      "main": [[{ "node": "📊 Rapport Semaine", "type": "main", "index": 0 }]]
+    },
+
+    "📊 Rapport Semaine": {
+      "main": [[{ "node": "📈 Rapport Telegram", "type": "main", "index": 0 }]]
+    }
+  }
+}
